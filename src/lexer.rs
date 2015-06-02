@@ -14,7 +14,7 @@ pub struct Lexer {
 }
 
 impl Lexer {
-	pub fn new(stream: Box<Read>) -> Lexer {
+	pub fn new(stream: Box<Read>) -> Self {
 		Lexer {stream: stream, buf: [0u8; BUF_SIZE], mark: 0, pos: 0, limit: 0}
 	}
 
@@ -32,6 +32,7 @@ impl Lexer {
 	}
 
 	pub fn getc(&mut self) -> u8 {
+		assert!(!self.eof());
 		self.pos += 1;
 		self.buf[self.pos - 1]
 	}
@@ -41,21 +42,21 @@ impl Lexer {
 	}
 
 	pub fn consume(&mut self, byte: u8) -> bool {
-		if self.peek() != byte {
+		if self.eof() || self.peek() != byte {
 			return false;
 		}
 		self.pos += 1;
 		true
 	}
 
-	pub fn skip(&mut self) -> &mut Lexer {
+	pub fn skip(&mut self) -> &mut Self {
 		while !self.eof() && b" \t\r\n\0".contains(&self.peek()) {
 			self.pos += 1;
 		}
 		self
 	}
 
-	pub fn until(&mut self, delim: &[u8]) -> &mut Lexer {
+	pub fn until(&mut self, delim: &[u8]) -> &mut Self {
 		while !self.eof() && !delim.contains(&self.peek()) {
 			self.pos += 1;
 		}
@@ -71,7 +72,10 @@ impl Lexer {
 
 	pub fn nextf(&mut self) -> f32 {
 		self.skip().consume(b',');
-		let tmp = unsafe { str::from_utf8_unchecked(self.next(b" \t\r\n\0,")) };
+		self.mark = self.pos;
+		self.consume(b'-');
+		self.until(b" \t\r\n\0,-'\"mzlhvcsqtaMZLHVCSQTA");
+		let tmp = unsafe { str::from_utf8_unchecked(&self.buf[self.mark..self.pos]) };
 		tmp.parse::<f32>().unwrap()
 	}
 }

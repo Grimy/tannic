@@ -1,93 +1,110 @@
 /// main.rs
 
 mod lexer;
+mod path;
+
 use lexer::Lexer;
+use path::{Path,PathVisitor,PSExporter};
+use path::Segment::*;
+
 use std::fs::File;
+use std::io::{Read,stdout};
 use std::str;
+use std::f32::NAN;
 
-fn text(text: &[u8]) {
-	println!("Text: {}", str::from_utf8(text).unwrap());
+struct SVGParser {
+	path: Path,
+	out: Box<PathVisitor>,
 }
 
-fn tag(name: &[u8]) {
-	println!("Tag: {}", str::from_utf8(name).unwrap());
-}
-
-fn closetag() {
-	println!("Closetag");
-}
-
-fn attr(name: &str, scanner: &mut Lexer) {
-	println!("Attr: {}", name);
-	match name {
-		"d" => parse_d(scanner),
-		_ => { scanner.next(b"'\""); },
+impl SVGParser {
+	fn text(&mut self, text: &[u8]) {
+		// println!("Text: {}", str::from_utf8(text).unwrap());
 	}
-}
 
-fn parse_d(scanner: &mut Lexer) {
-	let mut cmd = b'M';
-	loop {
-		match scanner.skip().peek() {
-			b'\'' | b'"' => break,
-			b'm' | b'z' | b'l' | b'h' | b'v' | b'c' | b's' | b'q' | b't' | b'a' |
-			b'M' | b'Z' | b'L' | b'H' | b'V' | b'C' | b'S' | b'Q' | b'T' | b'A' => cmd = scanner.getc(),
-			_ => {},
-		}
-		match cmd & b'_' {
-			b'M' => println!("{} {} moveto", scanner.nextf(), scanner.nextf()),
-			b'L' => println!("{} {} lineto", scanner.nextf(), scanner.nextf()),
-			b'Z' => println!("closepath"),
-			b'H' => println!("{} horz", scanner.nextf()),
-			b'V' => println!("{} vert", scanner.nextf()),
-			b'C' => println!("{} {} {} {} {} {} curveto", scanner.nextf(), scanner.nextf(), scanner.nextf(), scanner.nextf(), scanner.nextf(), scanner.nextf()),
-			b'S' => println!("{} {} {} {} smoothto", scanner.nextf(), scanner.nextf(), scanner.nextf(), scanner.nextf()),
-			b'Q' => println!("{} {} {} {} quadto", scanner.nextf(), scanner.nextf(), scanner.nextf(), scanner.nextf()),
-			b'T' => println!("{} {} smoothquadto", scanner.nextf(), scanner.nextf()),
-			b'A' => println!("{} {} {} {} {} {} {} arcto", scanner.nextf(), scanner.nextf(), scanner.nextf(), scanner.nextf(), scanner.nextf(), scanner.nextf(), scanner.nextf()),
-			_ => panic!("Unknown path command: {}", cmd),
+	fn tag(&mut self, name: &[u8]) {
+		// println!("Tag: {}", str::from_utf8(name).unwrap());
+		self.out.visit_all(&mut self.path);
+		self.path.clear();
+	}
+
+	fn closetag(&mut self) {
+		// path.clear();
+	}
+
+	fn attr(&mut self, name: &str, lexer: &mut Lexer) {
+		match name {
+			"d" => self.parse_d(lexer),
+			_ => { lexer.next(b"'\""); },
 		}
 	}
-}
 
-fn parse(file: &str) {
-	let mut scanner = Lexer::new(Box::new(File::open(file).unwrap()));
-	// Skip the xml declaration
-	assert_eq!(scanner.next(b" \t\r\n\0"), b"<?xml");
-	scanner.until(b">");
-	loop {
-		assert_eq!(scanner.getc(), b'>');
-		if scanner.skip().eof() { break }
-		text(scanner.next(b"<"));
-		assert_eq!(scanner.getc(), b'<');
-		if scanner.consume(b'!') {
-			// Skip doctypes and comments
-			scanner.until(b">");
-			continue;
-		}
-		if scanner.consume(b'/') {
-			closetag();
-			scanner.until(b">");
-			continue;
-		}
-		tag(scanner.next(b" \t\r\n\0"));
+	fn parse_d(&mut self, lexer: &mut Lexer) {
+		let mut cmd = b'M';
 		loop {
-			if scanner.skip().consume(b'/') {
-				closetag();
+			match lexer.skip().peek() {
+				b'\'' | b'"' => break,
+				b'm' | b'z' | b'l' | b'h' | b'v' | b'c' | b's' | b'q' | b't' | b'a' |
+				b'M' | b'Z' | b'L' | b'H' | b'V' | b'C' | b'S' | b'Q' | b'T' | b'A' => cmd = lexer.getc(),
+				_ => {},
 			}
-			if scanner.peek() == b'>' { break; }
-			let name = str::from_utf8(scanner.next(b" \t\r\n\0=")).unwrap().to_string();
-			assert_eq!(scanner.skip().getc(), b'=');
-			let quote = scanner.skip().getc();
-			assert!(quote == b'\'' || quote == b'"');
-			attr(&name, &mut scanner);
-			assert_eq!(scanner.getc(), quote);
+			self.path.visit(match cmd & b'_' {
+				b'M' => MoveTo([lexer.nextf(), lexer.nextf()]),
+				b'L' => LineTo([lexer.nextf(), lexer.nextf()]),
+				b'Z' => ClosePath,
+				b'H' => LineTo([lexer.nextf(), NAN]),
+				b'V' => LineTo([NAN, lexer.nextf()]),
+				b'C' => CurveTo([lexer.nextf(), lexer.nextf(), lexer.nextf(), lexer.nextf(), lexer.nextf(), lexer.nextf()]),
+				b'S' => CurveTo([NAN, NAN, lexer.nextf(), lexer.nextf(), lexer.nextf(), lexer.nextf()]),
+				b'Q' => QuadTo([lexer.nextf(), lexer.nextf(), lexer.nextf(), lexer.nextf()]),
+				b'T' => QuadTo([NAN, NAN, lexer.nextf(), lexer.nextf()]),
+				b'A' => ArcTo([lexer.nextf(), lexer.nextf(), lexer.nextf(), lexer.nextf(), lexer.nextf(), lexer.nextf(), lexer.nextf()]),
+				_ => panic!("Unknown path command: {}", cmd),
+			})
+		}
+	}
+
+	fn parse(&mut self, input: Box<Read>) {
+		let mut lexer = Lexer::new(input);
+		// Skip the xml declaration
+		assert_eq!(lexer.next(b" \t\r\n\0"), b"<?xml");
+		lexer.until(b">");
+		loop {
+			assert_eq!(lexer.getc(), b'>');
+			if lexer.skip().eof() { break }
+			self.text(lexer.next(b"<"));
+			assert_eq!(lexer.getc(), b'<');
+			if lexer.consume(b'!') {
+				// Skip doctypes and comments
+				lexer.until(b">");
+				continue;
+			}
+			if lexer.consume(b'/') {
+				self.closetag();
+				lexer.until(b">");
+				continue;
+			}
+			self.tag(lexer.next(b" \t\r\n\0>"));
+			while lexer.skip().peek() != b'>' {
+				if lexer.consume(b'/') {
+					self.closetag();
+					break;
+				}
+				let name = str::from_utf8(lexer.next(b" \t\r\n\0=")).unwrap().to_string();
+				assert_eq!(lexer.skip().getc(), b'=');
+				let quote = lexer.skip().getc();
+				assert!(quote == b'\'' || quote == b'"');
+				self.attr(&name, &mut lexer);
+				assert_eq!(lexer.getc(), quote);
+			}
 		}
 	}
 }
 
 fn main() {
-	for i in 0..10000 {
-		parse("/home/grimy/src/snippets/xml/huge.svg");
-	}
+	let mut parser = SVGParser {
+		path: Path::new(),
+		out: Box::new(PSExporter::new(Box::new(stdout())))
+	};
+	parser.parse(Box::new(File::open("/home/grimy/src/scar/huge.svg").unwrap()));
 }
